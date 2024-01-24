@@ -13,7 +13,7 @@ import torch.distributed as dist
 
 # Change this to reflect your cluster layout.
 # The GPU for a given rank is (rank % GPUS_PER_NODE).
-GPUS_PER_NODE = 1
+GPUS_PER_NODE = 8
 
 SETUP_RETRY_COUNT = 3
 
@@ -26,8 +26,7 @@ def setup_dist():
         return
 
     comm = MPI.COMM_WORLD
-    # backend = "gloo" if not th.cuda.is_available() else "nccl"
-    backend = "gloo"
+    backend = "gloo" if not th.cuda.is_available() else "nccl"
 
     if backend == "gloo":
         hostname = "localhost"
@@ -68,10 +67,9 @@ def sync_params(params):
     """
     Synchronize a sequence of Tensors across ranks from rank 0.
     """
-    if MPI.COMM_WORLD.Get_rank() != 0:
-        for p in params:
-            with th.no_grad():
-                dist.broadcast(p, 0)
+    for p in params:
+        with th.no_grad():
+            dist.broadcast(p, 0)
 
 
 def _find_free_port():

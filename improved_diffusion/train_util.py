@@ -9,8 +9,6 @@ import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.optim import AdamW
 
-import matplotlib.pyplot as plt
-
 from . import dist_util, logger
 from .fp16_util import (
     make_master_params,
@@ -41,10 +39,7 @@ class TrainLoop:
         ema_rate,
         log_interval,
         save_interval,
-        val_interval,
         resume_checkpoint,
-        model_dir="tmp",
-        log_dir="log",
         use_fp16=False,
         fp16_scale_growth=1e-3,
         schedule_sampler=None,
@@ -64,12 +59,7 @@ class TrainLoop:
         )
         self.log_interval = log_interval
         self.save_interval = save_interval
-        self.val_interval = val_interval
         self.resume_checkpoint = resume_checkpoint
-        self.model_dir = model_dir
-        os.makedirs(model_dir, exist_ok=True)
-        self.log_dir = log_dir
-        os.makedirs(log_dir, exist_ok=True)
         self.use_fp16 = use_fp16
         self.fp16_scale_growth = fp16_scale_growth
         self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
@@ -79,7 +69,6 @@ class TrainLoop:
         self.step = 0
         self.resume_step = 0
         self.global_batch = self.batch_size * dist.get_world_size()
-        # self.global_batch = self.batch_size
 
         self.model_params = list(self.model.parameters())
         self.master_params = self.model_params
@@ -174,14 +163,11 @@ class TrainLoop:
             not self.lr_anneal_steps
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
-            batch, cond, kwargs = next(self.data)
-            self.run_step(batch, cond, kwargs)
+            batch, cond = next(self.data)
+            self.run_step(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
-            if self.step % self.val_interval == 0:
-                batch, cond, kwargs = next(self.data)
-                self.val_step(batch, cond, kwargs)
-            if self.step % self.save_interval == 0 and self.step > 0:
+            if self.step % self.save_interval == 0:
                 self.save()
                 # Run for a finite amount of time in integration tests.
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
@@ -191,49 +177,21 @@ class TrainLoop:
         if (self.step - 1) % self.save_interval != 0:
             self.save()
 
-    def run_step(self, batch, cond, kwargs):
-        self.forward_backward(batch, cond, kwargs)
+    def run_step(self, batch, cond):
+        self.forward_backward(batch, cond)
         if self.use_fp16:
             self.optimize_fp16()
         else:
             self.optimize_normal()
         self.log_step()
 
-    def val_step(self, batch, cond, kwargs):
-        self.model.eval()
-        cond = cond.to(dist_util.dev())
-        kwargs = {k: v.to(dist_util.dev()) for k, v in kwargs.items()}
-        with th.no_grad():
-            sample = self.diffusion.p_sample_loop(
-                self.model,
-                cond,
-                (self.batch_size, 3, batch.shape[-2], batch.shape[-1]),
-                model_kwargs=kwargs,
-            )
-        batch = ((batch + 1) * 127.5).clamp(0, 255).to(th.uint8)
-        batch = batch.permute(0, 2, 3, 1)
-        batch = batch.contiguous().cpu().numpy()
-        cond = ((cond +1) * 127.5).clamp(0, 255).to(th.uint8)
-        cond = cond.permute(0, 2, 3, 1)
-        cond = cond.contiguous().cpu().numpy()
-        sample = ((sample + 1) * 127.5).clamp(0, 255).to(th.uint8)
-        sample = sample.permute(0, 2, 3, 1)
-        sample = sample.contiguous().cpu().numpy()
-        self.model.train()
-
-        for i in range(self.batch_size):
-            plt.imsave(os.path.join(self.log_dir, '%d_LR.png'%i), cond[i])
-            plt.imsave(os.path.join(self.log_dir, '%d_SR.png'%i), sample[i])
-            plt.imsave(os.path.join(self.log_dir, '%d_HR.png'%i), batch[i])
-
-    def forward_backward(self, batch, cond, kwargs):
+    def forward_backward(self, batch, cond):
         zero_grad(self.model_params)
         for i in range(0, batch.shape[0], self.microbatch):
             micro = batch[i : i + self.microbatch].to(dist_util.dev())
-            micro_cond = cond[i : i + self.microbatch].to(dist_util.dev())
-            micro_kwargs = {
+            micro_cond = {
                 k: v[i : i + self.microbatch].to(dist_util.dev())
-                for k, v in kwargs.items()
+                for k, v in cond.items()
             }
             last_batch = (i + self.microbatch) >= batch.shape[0]
             t, weights = self.schedule_sampler.sample(micro.shape[0], dist_util.dev())
@@ -242,9 +200,8 @@ class TrainLoop:
                 self.diffusion.training_losses,
                 self.ddp_model,
                 micro,
-                micro_cond,
                 t,
-                model_kwargs=micro_kwargs,
+                model_kwargs=micro_cond,
             )
 
             if last_batch or not self.use_ddp:
@@ -320,7 +277,7 @@ class TrainLoop:
                     filename = f"model{(self.step+self.resume_step):06d}.pt"
                 else:
                     filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
-                with bf.BlobFile(bf.join(self.model_dir, filename), "wb") as f:
+                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
                     th.save(state_dict, f)
 
         save_checkpoint(0, self.master_params)
@@ -329,7 +286,7 @@ class TrainLoop:
 
         if dist.get_rank() == 0:
             with bf.BlobFile(
-                bf.join(self.model_dir, f"opt{(self.step+self.resume_step):06d}.pt"),
+                bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
                 "wb",
             ) as f:
                 th.save(self.opt.state_dict(), f)

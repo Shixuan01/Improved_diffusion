@@ -71,19 +71,18 @@ class SpacedDiffusion(GaussianDiffusion):
 
     def __init__(self, use_timesteps, **kwargs):
         self.use_timesteps = set(use_timesteps)
-        self.timestep_map = list(self.use_timesteps)
-        # self.timestep_map = []
+        self.timestep_map = []
         self.original_num_steps = len(kwargs["betas"])
 
-        # base_diffusion = GaussianDiffusion(**kwargs)  # pylint: disable=missing-kwoa
-        # last_alpha_cumprod = 1.0
-        # new_betas = []
-        # for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod):
-        #     if i in self.use_timesteps:
-        #         new_betas.append(1 - alpha_cumprod / last_alpha_cumprod)
-        #         last_alpha_cumprod = alpha_cumprod
-        #         self.timestep_map.append(i)
-        # kwargs["betas"] = np.array(new_betas)
+        base_diffusion = GaussianDiffusion(**kwargs)  # pylint: disable=missing-kwoa
+        last_alpha_cumprod = 1.0
+        new_betas = []
+        for i, alpha_cumprod in enumerate(base_diffusion.alphas_cumprod):
+            if i in self.use_timesteps:
+                new_betas.append(1 - alpha_cumprod / last_alpha_cumprod)
+                last_alpha_cumprod = alpha_cumprod
+                self.timestep_map.append(i)
+        kwargs["betas"] = np.array(new_betas)
         super().__init__(**kwargs)
 
     def p_mean_variance(
@@ -115,9 +114,9 @@ class _WrappedModel:
         self.rescale_timesteps = rescale_timesteps
         self.original_num_steps = original_num_steps
 
-    def __call__(self, x, y, ts, **kwargs):
+    def __call__(self, x, ts, **kwargs):
         map_tensor = th.tensor(self.timestep_map, device=ts.device, dtype=ts.dtype)
         new_ts = map_tensor[ts]
         if self.rescale_timesteps:
             new_ts = new_ts.float() * (1000.0 / self.original_num_steps)
-        return self.model(x, y, new_ts, **kwargs)
+        return self.model(x, new_ts, **kwargs)

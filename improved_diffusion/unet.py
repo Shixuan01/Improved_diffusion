@@ -533,12 +533,9 @@ class SuperResModel(UNetModel):
     def __init__(self, in_channels, *args, **kwargs):
         super().__init__(in_channels * 2, *args, **kwargs)
 
-    def forward(self, x, low_res, timesteps, **kwargs):
+    def forward(self, x, timesteps, low_res=None, **kwargs):
         _, _, new_height, new_width = x.shape
-        if low_res.shape != x.shape:
-            upsampled = F.interpolate(low_res, (new_height, new_width), mode="bilinear")
-        else:
-            upsampled = low_res
+        upsampled = F.interpolate(low_res, (new_height, new_width), mode="bilinear")
         x = th.cat([x, upsampled], dim=1)
         return super().forward(x, timesteps, **kwargs)
 

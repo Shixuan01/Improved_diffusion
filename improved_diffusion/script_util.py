@@ -23,7 +23,7 @@ def model_and_diffusion_defaults():
         learn_sigma=False,
         sigma_small=False,
         class_cond=False,
-        diffusion_steps=4,
+        diffusion_steps=1000,
         noise_schedule="linear",
         timestep_respacing="",
         use_kl=False,
@@ -200,7 +200,7 @@ def sr_create_model(
 ):
     _ = small_size  # hack to prevent unused variable
 
-    if large_size == 256 or large_size == 128:
+    if large_size == 256:
         channel_mult = (1, 1, 2, 2, 4, 4)
     elif large_size == 64:
         channel_mult = (1, 2, 3, 4)
@@ -251,20 +251,18 @@ def create_gaussian_diffusion(
     return SpacedDiffusion(
         use_timesteps=space_timesteps(steps, timestep_respacing),
         betas=betas,
-        model_mean_type=gd.ModelMeanType.BB_EPS,
-        # model_mean_type=(
-        #     gd.ModelMeanType.EPSILON if not predict_xstart else gd.ModelMeanType.START_X
-        # ),
-        model_var_type=gd.ModelVarType.FIXED_BB,
-        # model_var_type=(
-        #     (
-        #         gd.ModelVarType.FIXED_LARGE
-        #         if not sigma_small
-        #         else gd.ModelVarType.FIXED_SMALL
-        #     )
-        #     if not learn_sigma
-        #     else gd.ModelVarType.LEARNED_RANGE
-        # ),
+        model_mean_type=(
+            gd.ModelMeanType.EPSILON if not predict_xstart else gd.ModelMeanType.START_X
+        ),
+        model_var_type=(
+            (
+                gd.ModelVarType.FIXED_LARGE
+                if not sigma_small
+                else gd.ModelVarType.FIXED_SMALL
+            )
+            if not learn_sigma
+            else gd.ModelVarType.LEARNED_RANGE
+        ),
         loss_type=loss_type,
         rescale_timesteps=rescale_timesteps,
     )
